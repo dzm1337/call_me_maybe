@@ -1,13 +1,8 @@
 import json
+from json import JSONDecodeError
 from pathlib import Path
-
-from src.models.function import FunctionDef
-
-
-def load_file(file_path: Path):
-    with open(file_path, "r", encoding="utf-8") as f:
-        return json.load(f)
-
+from src.function import FunctionDef
+from pydantic import ValidationError
 
 def validate_functions() -> list[FunctionDef]:
     file_path = (
@@ -17,16 +12,22 @@ def validate_functions() -> list[FunctionDef]:
         / "functions_definition.json"
     )
 
-    data = load_file(file_path)
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, JSONDecodeError) as e:
+        raise RuntimeError(f"Failed to load functions definition: {e}")
 
     if not isinstance(data, list):
         raise ValueError("functions_definition.json must be a list")
 
     functions: list[FunctionDef] = []
-    for item in data:
-        fn = FunctionDef.model_validate(item)
-        functions.append(fn)
-
+    try:
+        for item in data:
+            fn = FunctionDef.model_validate(item)
+            functions.append(fn)
+    except ValidationError as e:
+        raise ValueError(f"Invalid function definition: {e}")
     return functions
 
 
@@ -38,7 +39,11 @@ def load_prompts() -> list[str]:
         / "function_calling_tests.json"
     )
 
-    data = load_file(file_path)
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (FileNotFoundError, JSONDecodeError) as e:
+        raise RuntimeError(f"Failed to load prompts: {e}")
 
     if not isinstance(data, list):
         raise ValueError("function_calling_tests.json must be a list")

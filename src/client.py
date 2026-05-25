@@ -1,5 +1,6 @@
 from llm_sdk.llm_sdk import Small_LLM_Model
 import json
+from json import JSONDecodeError
 from typing import Dict, List
 
 
@@ -12,12 +13,17 @@ class LLMClient(Small_LLM_Model):
     def _load_vocabulary(self) -> Dict[int, str]:
         """Loading the vocabulary manually"""
         if self._vocab is None:
-            path = self.get_path_to_vocab_file()
-            with open(path, "r", encoding="utf8") as f:
-                raw = json.load(f)
-            self._vocab = {int(t_id): t_text for t_id, t_text in raw.items()}
-            """Inversion for fast lookup"""
-            self._text_to_token = {t_text: t_id for t_id, t_text in self._vocab.items()}
+            try:
+                
+                path = self.get_path_to_vocab_file()
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                self._vocab = {int(t_id): t_text for t_id, t_text in raw.items()}
+                """Inversion for fast lookup"""
+                self._text_to_token = {t_text: t_id for t_id, t_text in self._vocab.items()}
+
+            except (FileNotFoundError, PermissionError, JSONDecodeError) as e:
+                raise RuntimeError(f"ERROR: Failed to open {path}: {e}")
         return self._vocab
     
     def text_to_tokens(self, text: str) -> List[int]:
@@ -29,7 +35,7 @@ class LLMClient(Small_LLM_Model):
         n = len(text)
         while i < n:
             matched = False
-            max_len = min(20, n - i)
+            max_len = n - i if n - i < 20 else 20
             for length in range(max_len, 0, -1):
                 possible_token = text[i:i+length]
                 if possible_token in self._text_to_token:
