@@ -20,7 +20,7 @@ def validate_functions() -> list[FunctionDef]:
     data = load_file(file_path)
 
     if not isinstance(data, list):
-        raise ValueError("functions_definition.json deve conter uma lista")
+        raise ValueError("functions_definition.json must be a list")
 
     functions: list[FunctionDef] = []
     for item in data:
@@ -41,12 +41,12 @@ def load_prompts() -> list[str]:
     data = load_file(file_path)
 
     if not isinstance(data, list):
-        raise ValueError("function_calling_tests.json deve conter uma lista")
+        raise ValueError("function_calling_tests.json must be a list")
 
     prompts: list[str] = []
     for item in data:
         if not isinstance(item, dict) or "prompt" not in item:
-            raise ValueError(f"Item inválido: {item}")
+            raise ValueError(f"Invalid Item: {item}")
         prompts.append(item["prompt"])
 
     return prompts
