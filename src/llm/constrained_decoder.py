@@ -9,17 +9,8 @@ class ConstrainedDecoder:
         self.functions = functions
         self.func_names = [x.name for x in functions]
         self.map_func = {x.name: x for x in functions}
-        self.vocab = self._load_vocabulary()
-        self.text_to_token = self._text_to_token()
-
-    def _text_to_token(self) -> Dict[str, int]:
-        """Inverting the dictionary to token_str: token_id"""
-        vocab = self.vocab
-        mapping = {}
-        for token_id, token_str in vocab.items():
-            if token_str not in mapping:
-                mapping[token_str] = token_id
-        return mapping 
+        self.vocab = self.llm._load_vocabulary() # {id: text}
+        self.text_to_token = {text: tid for tid, text in self.vocab.items()}
 
     def _fabricate_prompt(self) -> str:
         """Fabricating a prompt with allowed functions"""
@@ -35,8 +26,8 @@ class ConstrainedDecoder:
         lines.append("Respond with JSON only.")
         return "\n".join(lines)
 
-    def generate(self, user_prompt: str) -> FunctionCallResult:
+    def _full_prompt(self, user_prompt: str) -> str:
         fabricated_prompt = self._fabricate_prompt()
-        full_prompt = f"{fabriacted_prompt}\nUser: {user_prompt}\nAssistant: "
+        return f"{fabriacted_prompt}\nUser: {user_prompt}\nAssistant: "
 
-        input_ids = self.llm.encode(full_prompt)
+    
