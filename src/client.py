@@ -14,7 +14,7 @@ class LLMClient(Small_LLM_Model):
         """Loading the vocabulary manually"""
         if self._vocab is None:
             try:
-                
+
                 path = self.get_path_to_vocab_file()
                 with open(path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
@@ -33,23 +33,29 @@ class LLMClient(Small_LLM_Model):
         tokens = []
         i = 0
         n = len(text)
+
         while i < n:
             matched = False
             max_len = n - i if n - i < 20 else 20
             for length in range(max_len, 0, -1):
                 possible_token = text[i:i+length]
+
                 if possible_token in self._text_to_token:
                     tokens.append(self._text_to_token[possible_token])
                     i += length
                     matched = True
                     break
+
             if not matched:
                 first_char = text[i]
+
                 if first_char in self._text_to_token:
                     tokens.append(self._text_to_token[first_char])
                 else:
                     tokens.append(0)
+                    
                 i += 1
+
         return tokens
 
     def tokens_to_text(self, tokens_id: list[int]) -> str:
