@@ -2,8 +2,8 @@ import re
 from typing import Any
 
 import numpy as np
-from llm_sdk.llm_sdk import Small_LLM_Model
 
+from llm_sdk.llm_sdk import Small_LLM_Model
 from src.models import FunctionCallResult, FunctionDef, ParamType
 from src.vocabulary import load_vocabulary
 
@@ -11,6 +11,8 @@ NEG_INF: float = float("-inf")
 
 
 class ConstrainedDecoder:
+    """Generates function calls using constrained token-by-token decoding."""
+
     def __init__(
         self,
         model: Small_LLM_Model,
@@ -30,6 +32,7 @@ class ConstrainedDecoder:
         self.newline_ids: set[int] = self._load_newline_ids()
 
     def _load_stop_ids(self) -> set[int]:
+        """Load token ids that signal end of generation."""
         stop_strings = {
             "<|endoftext|>",
             "</s>",
@@ -42,6 +45,7 @@ class ConstrainedDecoder:
         }
 
     def _load_quote_ids(self) -> set[int]:
+        """Load token ids that represent a double quote."""
         return {
             tid
             for tid, tok in self.id_to_token.items()
@@ -49,23 +53,83 @@ class ConstrainedDecoder:
         }
 
     def _load_newline_ids(self) -> set[int]:
+        """Load token ids that represent a newline."""
         return {
             tid
             for tid, tok in self.id_to_token.items()
             if "Ċ" in tok or "\n" in tok
         }
 
+    # ------------------------------------------------------------------ #
+    # Public API                                                           #
+    # ------------------------------------------------------------------ #
+
     def generate(self, user_prompt: str) -> FunctionCallResult:
-        fn_name = self._select_function(user_prompt)
+        """Generate a function call for a user prompt.
+
+        Args:
+            user_prompt: Natural language request.
+
+        Returns:
+            Structured function call result.
+        """
+        prompt = self._build_prompt(user_prompt)
+        context = self._encode(prompt)
+
+        fn_name, context = self._generate_fn_name(context)
         fn_def = self.fn_map[fn_name]
-        parameters = self._extract_parameters(user_prompt, fn_def)
+        parameters, context = self._generate_parameters(context, fn_def)
+
         return FunctionCallResult(
             prompt=user_prompt,
             name=fn_name,
             parameters=parameters,
         )
 
+    # ------------------------------------------------------------------ #
+    # Function selection                                                   #
+    # ------------------------------------------------------------------ #
+
+    def _select_function(self, user_prompt: str) -> str:
+        """Select the best function using constrained decoding.
+
+        Args:
+            user_prompt: Natural language request.
+
+        Returns:
+            Selected function name.
+        """
+        prompt = self._build_prompt(user_prompt)
+        context = self._encode(prompt)
+        generated = ""
+
+        for _ in range(80):
+            logits = self._get_logits(context)
+            masked = self._mask_for_fn_name(logits, generated)
+            next_id = int(np.argmax(masked))
+            token_str = self.id_to_token.get(next_id, "")
+
+            context = context + [next_id]
+            generated += token_str
+
+            clean = self._clean(generated)
+            if clean in self.fn_names:
+                return clean
+
+            if not self._is_fn_prefix(clean):
+                break
+
+        return self._best_fn_match(self._clean(generated))
+
     def _build_prompt(self, user_prompt: str) -> str:
+        """Build prompt for function selection.
+
+        Args:
+            user_prompt: Natural language request.
+
+        Returns:
+            Prompt string.
+        """
         fn_lines = []
         for f in self.functions:
             params = ", ".join(
@@ -77,14 +141,24 @@ class ConstrainedDecoder:
 
         return (
             "You are a function calling assistant.\n"
-            "Read the user request carefully and select the single most appropriate function.\n"
-            "The function name must exactly match one of the available functions.\n\n"
+            "Read the user request carefully and select the single most "
+            "appropriate function.\n"
+            "The function name must exactly match one of the available "
+            "functions.\n\n"
             f"Available functions:\n{fn_list}\n\n"
             f"User request: {user_prompt}\n"
             'Selected function name: "'
         )
 
     def _generate_fn_name(self, context: list[int]) -> tuple[str, list[int]]:
+        """Generate function name via constrained decoding.
+
+        Args:
+            context: Current token context.
+
+        Returns:
+            Tuple of function name and updated context.
+        """
         generated = ""
 
         for _ in range(80):
@@ -111,6 +185,15 @@ class ConstrainedDecoder:
         logits: np.ndarray,
         current: str,
     ) -> np.ndarray:
+        """Mask logits so only valid function name continuations remain.
+
+        Args:
+            logits: Raw logits over the vocabulary.
+            current: Current generated prefix.
+
+        Returns:
+            Masked logits array.
+        """
         masked = np.full_like(logits, NEG_INF)
         current_clean = self._clean(current)
 
@@ -125,9 +208,25 @@ class ConstrainedDecoder:
         return masked
 
     def _is_fn_prefix(self, text: str) -> bool:
+        """Check if text is a prefix of any known function name.
+
+        Args:
+            text: Text to check.
+
+        Returns:
+            True if valid prefix.
+        """
         return any(name.startswith(text) for name in self.fn_names)
 
     def _best_fn_match(self, text: str) -> str:
+        """Return best fallback function by longest common prefix.
+
+        Args:
+            text: Partial generated text.
+
+        Returns:
+            Best matching function name.
+        """
         best_name = self.fn_names[0]
         best_len = -1
         for name in self.fn_names:
@@ -137,11 +236,116 @@ class ConstrainedDecoder:
                 best_name = name
         return best_name
 
+    # ------------------------------------------------------------------ #
+    # Parameter extraction                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _extract_parameters(
+        self,
+        user_prompt: str,
+        fn_def: FunctionDef,
+    ) -> dict[str, Any]:
+        """Extract all parameters using individual prompts per parameter.
+
+        Args:
+            user_prompt: Natural language request.
+            fn_def: Selected function definition.
+
+        Returns:
+            Dict of extracted parameter values.
+        """
+        result: dict[str, Any] = {}
+
+        for param_name, param_type_def in fn_def.parameters.items():
+            param_type = param_type_def.type
+            prompt = self._build_param_prompt(
+                user_prompt=user_prompt,
+                fn_def=fn_def,
+                param_name=param_name,
+                param_type=param_type,
+            )
+            context = self._encode(prompt)
+
+            if param_type == ParamType.NUMBER:
+                value, _ = self._gen_number(context)
+            elif param_type == ParamType.BOOLEAN:
+                value, _ = self._gen_boolean(context)
+            else:
+                value, _ = self._gen_string(context)
+
+            result[param_name] = value
+
+        return result
+
+    def _build_param_prompt(
+        self,
+        user_prompt: str,
+        fn_def: FunctionDef,
+        param_name: str,
+        param_type: ParamType,
+    ) -> str:
+        """Build prompt for extracting one parameter.
+
+        Args:
+            user_prompt: Natural language request.
+            fn_def: Selected function definition.
+            param_name: Name of the parameter to extract.
+            param_type: Type of the parameter.
+
+        Returns:
+            Prompt string.
+        """
+        params = ", ".join(
+            f"{name}: {type_def.type.value}"
+            for name, type_def in fn_def.parameters.items()
+        )
+
+        if param_type == ParamType.NUMBER:
+            value_hint = (
+                "Return only the number. Do not explain. Do not add quotes."
+            )
+            suffix = "Value: "
+        elif param_type == ParamType.BOOLEAN:
+            value_hint = (
+                "Return only true or false. Do not explain. Do not add quotes."
+            )
+            suffix = "Value: "
+        else:
+            value_hint = (
+                "Return only the raw string value. "
+                "Do not explain. Do not add extra text."
+            )
+            suffix = 'Value: "'
+
+        return (
+            "You are a parameter extractor.\n"
+            f"Function: {fn_def.name}({params})\n"
+            f"Description: {fn_def.description}\n"
+            f"Parameter to extract: {param_name}\n"
+            f"Parameter type: {param_type.value}\n"
+            f"{value_hint}\n\n"
+            f"User request: {user_prompt}\n"
+            f"{suffix}"
+        )
+
+    # ------------------------------------------------------------------ #
+    # Parameter generation (JSON context)                                  #
+    # ------------------------------------------------------------------ #
+
     def _generate_parameters(
         self,
         context: list[int],
         fn_def: FunctionDef,
     ) -> tuple[dict[str, Any], list[int]]:
+        """Generate parameters injecting fixed JSON structure.
+
+        Args:
+            context: Current token context.
+            fn_def: Function definition.
+
+        Returns:
+            Tuple of parameters dict and updated context.
+        """
         context = context + self._encode('", "parameters": {')
 
         params: dict[str, Any] = {}
@@ -167,7 +371,19 @@ class ConstrainedDecoder:
         context = context + self._encode("}}")
         return params, context
 
+    # ------------------------------------------------------------------ #
+    # Number generation                                                    #
+    # ------------------------------------------------------------------ #
+
     def _gen_number(self, context: list[int]) -> tuple[float, list[int]]:
+        """Generate a number using constrained decoding.
+
+        Args:
+            context: Current token context.
+
+        Returns:
+            Tuple of parsed number and updated context.
+        """
         generated = ""
         current_context = list(context)
 
@@ -201,6 +417,15 @@ class ConstrainedDecoder:
         logits: np.ndarray,
         current: str,
     ) -> np.ndarray:
+        """Mask logits so only valid number continuations remain.
+
+        Args:
+            logits: Raw logits.
+            current: Current number prefix.
+
+        Returns:
+            Masked logits array.
+        """
         masked = np.full_like(logits, NEG_INF)
 
         for token_id, token_str in self.id_to_token.items():
@@ -217,11 +442,27 @@ class ConstrainedDecoder:
         return masked
 
     def _is_number_prefix(self, text: str) -> bool:
+        """Check if text is a valid number prefix.
+
+        Args:
+            text: Candidate prefix.
+
+        Returns:
+            True if valid.
+        """
         if not text:
             return True
         return bool(re.match(r"^-?\d*\.?\d*$", text))
 
     def _is_complete_number(self, text: str) -> bool:
+        """Check if text is a complete valid number.
+
+        Args:
+            text: Candidate number.
+
+        Returns:
+            True if parseable as float.
+        """
         if not text:
             return False
         try:
@@ -231,6 +472,15 @@ class ConstrainedDecoder:
             return False
 
     def _would_extend_number(self, next_str: str, current: str) -> bool:
+        """Check if next token would continue the number.
+
+        Args:
+            next_str: Next token text.
+            current: Current number text.
+
+        Returns:
+            True if valid continuation.
+        """
         if not next_str:
             return False
         candidate = current + next_str
@@ -241,6 +491,14 @@ class ConstrainedDecoder:
         return True
 
     def _parse_number(self, text: str) -> float:
+        """Parse generated text as float.
+
+        Args:
+            text: Generated number text.
+
+        Returns:
+            Parsed float.
+        """
         try:
             return float(text)
         except ValueError:
@@ -249,7 +507,19 @@ class ConstrainedDecoder:
                 return float(match.group())
             return 0.0
 
+    # ------------------------------------------------------------------ #
+    # Boolean generation                                                   #
+    # ------------------------------------------------------------------ #
+
     def _gen_boolean(self, context: list[int]) -> tuple[bool, list[int]]:
+        """Generate a boolean value.
+
+        Args:
+            context: Current token context.
+
+        Returns:
+            Tuple of boolean and updated context.
+        """
         logits = self._get_logits(context)
         true_score: float = NEG_INF
         false_score: float = NEG_INF
@@ -272,10 +542,25 @@ class ConstrainedDecoder:
             return False, context + [false_id]
         return False, context
 
+    # ------------------------------------------------------------------ #
+    # String generation                                                    #
+    # ------------------------------------------------------------------ #
+
     def _gen_string(
         self,
         context: list[int],
     ) -> tuple[str, list[int]]:
+        """Generate a string value stopping at closing quote.
+
+        If a token contains a quote, the part before it is kept.
+        This handles tokens like '*"' or ')"' correctly.
+
+        Args:
+            context: Current token context.
+
+        Returns:
+            Tuple of string value and updated context.
+        """
         parts: list[str] = []
         current_context = list(context)
 
@@ -305,6 +590,14 @@ class ConstrainedDecoder:
         return result, current_context
 
     def _mask_for_string(self, logits: np.ndarray) -> np.ndarray:
+        """Mask logits to prevent tokens that break a JSON string.
+
+        Args:
+            logits: Raw logits over the vocabulary.
+
+        Returns:
+            Masked logits array.
+        """
         masked = logits.copy()
 
         for token_id, token_str in self.id_to_token.items():
@@ -321,10 +614,30 @@ class ConstrainedDecoder:
 
         return masked
 
+    # ------------------------------------------------------------------ #
+    # Shared helpers                                                       #
+    # ------------------------------------------------------------------ #
+
     def _clean(self, token_str: str) -> str:
+        """Convert tokenizer special chars to readable text.
+
+        Args:
+            token_str: Raw token text.
+
+        Returns:
+            Cleaned token text.
+        """
         return token_str.replace("Ġ", " ").replace("Ċ", "\n").strip()
 
     def _encode(self, text: str) -> list[int]:
+        """Encode text into token ids.
+
+        Args:
+            text: Input text.
+
+        Returns:
+            List of token ids.
+        """
         result = self.model.encode(text)
         if hasattr(result, "tolist"):
             result = result.tolist()
@@ -339,6 +652,14 @@ class ConstrainedDecoder:
         return [int(x) for x in result]
 
     def _get_logits(self, token_ids: list[int]) -> np.ndarray:
+        """Get next-token logits from the model.
+
+        Args:
+            token_ids: Current token sequence.
+
+        Returns:
+            1-D numpy array of logits.
+        """
         raw = self.model.get_logits_from_input_ids(token_ids)
 
         if hasattr(raw, "tolist"):
