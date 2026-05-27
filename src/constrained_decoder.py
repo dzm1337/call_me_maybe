@@ -3,7 +3,7 @@ from typing import Any
 
 import numpy as np
 
-from llm_sdk import Small_LLM_Model
+from llm_sdk import Small_LLM_Model  # type: ignore
 from src.models import FunctionCallResult, FunctionDef, ParamType
 from src.vocabulary import load_vocabulary
 
@@ -166,9 +166,9 @@ class ConstrainedDecoder:
 
     def _mask_for_fn_name(
         self,
-        logits: np.ndarray,
+        logits: np.ndarray[Any, np.dtype[np.float64]],
         current: str,
-    ) -> np.ndarray:
+    ) -> np.ndarray[Any, np.dtype[np.float64]]:
         """Mask logits so only valid function name continuations remain.
             input:
             logits: Raw logits over the vocabulary.
@@ -236,7 +236,9 @@ class ConstrainedDecoder:
                 param_name=param_name,
                 param_type=param_type,
             )
+
             context = self._encode(prompt)
+            value: Any
 
             if param_type == ParamType.NUMBER:
                 value, _ = self._gen_number(context)
@@ -320,6 +322,7 @@ class ConstrainedDecoder:
             context = context + self._encode(f'{separator}"{param_name}": ')
 
             param_type = param_typedef.type
+            value: Any
 
             if param_type == ParamType.NUMBER:
                 value, context = self._gen_number(context)
@@ -372,9 +375,9 @@ class ConstrainedDecoder:
 
     def _mask_for_number(
         self,
-        logits: np.ndarray,
+        logits: np.ndarray[Any, np.dtype[np.float64]],
         current: str,
-    ) -> np.ndarray:
+    ) -> np.ndarray[Any, np.dtype[np.float64]]:
         """Mask logits so only valid number continuations remain.
         input:
             logits: Raw logits.
@@ -537,7 +540,10 @@ class ConstrainedDecoder:
         result = "".join(parts).strip()
         return result, current_context
 
-    def _mask_for_string(self, logits: np.ndarray) -> np.ndarray:
+    def _mask_for_string(
+        self,
+        logits: np.ndarray[Any, np.dtype[np.float64]]
+    ) -> np.ndarray[Any, np.dtype[np.float64]]:
         """Mask logits to prevent tokens that break a JSON string.
 
         input:
@@ -595,7 +601,10 @@ class ConstrainedDecoder:
 
         return [int(x) for x in result]
 
-    def _get_logits(self, token_ids: list[int]) -> np.ndarray:
+    def _get_logits(
+        self,
+        token_ids: list[int]
+    ) -> np.ndarray[Any, np.dtype[np.float64]]:
         """Get next-token logits from the model.
 
         input:

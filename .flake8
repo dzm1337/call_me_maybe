@@ -1,0 +1,12 @@
+[flake8]
+exclude =
+    .git,
+    __pycache__,
+    .mypy_cache,
+    .pytest_cache,
+    .venv,
+    data,
+    llm_sdk
+max-line-length = 88
+per-file-ignores =
+    __init__.py:F401
