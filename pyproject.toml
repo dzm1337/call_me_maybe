@@ -5,17 +5,17 @@ description = "Translate natural language into function calls..."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-
     "llm-sdk",
     "numpy>=2.2.6",
     "pydantic>=2.12.5",
 ]
 
 [tool.uv.sources]
-llm-sdk = { path = "llm_sdk", editable = true }
+llm-sdk = { path = "./llm_sdk" }
 [dependency-groups]
 dev = [
 
     "flake8>=7.0.0",
     "mypy>=1.8.0",
 ]
+

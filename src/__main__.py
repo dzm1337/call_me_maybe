@@ -3,7 +3,7 @@ import json
 import sys
 from pathlib import Path
 
-from llm_sdk.llm_sdk import Small_LLM_Model
+from llm_sdk import Small_LLM_Model
 
 from src.constrained_decoder import ConstrainedDecoder
 from src.loader import load_functions, load_prompts
