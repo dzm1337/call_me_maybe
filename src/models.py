@@ -8,6 +8,7 @@ class ParamType(str, Enum):
     STRING = "string"
     NUMBER = "number"
     BOOLEAN = "boolean"
+    INTEGER = "integer"
 
 
 class TypeDef(BaseModel):
