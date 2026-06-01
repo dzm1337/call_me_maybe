@@ -37,7 +37,6 @@ Instead of relying on fragile prompting, the system forces the LLM to generate *
 # Create virtual environment and install dependencies
 uv sync
 Usage
-Bash# Default execution (uses data/input/ paths)
 uv run python -m src
 
 # With custom paths
