@@ -57,7 +57,6 @@ class ConstrainedDecoder:
         self.functions = functions
         self.fn_names: list[str] = [f.name for f in functions]
         self.fn_map: dict[str, FunctionDef] = {f.name: f for f in functions}
-        self._current_user_prompt: str = ""
 
         self.id_to_token: dict[int, str] = {}
         self.token_to_id: dict[str, int] = {}
@@ -82,12 +81,11 @@ class ConstrainedDecoder:
         return {tid for tid, tok in self.id_to_token.items() if "Ċ" in tok or "\n" in tok}
 
     def generate(self, user_prompt: str) -> FunctionCallResult:
-        self._current_user_prompt = user_prompt
         prompt = self._build_prompt(user_prompt)
         context = self._encode(prompt)
         fn_name, context = self._generate_fn_name(context)
         fn_def = self.fn_map[fn_name]
-        parameters, context = self._generate_parameters(context, fn_def)
+        parameters, context = self._generate_parameters(context, fn_def, user_prompt)
         return FunctionCallResult(prompt=user_prompt, name=fn_name, parameters=parameters)
 
     def _generate_fn_name(self, context: list[int]) -> tuple[str, list[int]]:
@@ -102,16 +100,10 @@ class ConstrainedDecoder:
             current_context.append(next_id)
             generated += clean_token
             if self.fn_trie.is_complete_word(generated):
-                return self._normalize_function_name(generated), current_context
+                return generated, current_context
             if not self.fn_trie.is_prefix(generated):
                 break
-        best = self._best_fn_match(generated)
-        return self._normalize_function_name(best), current_context
-
-    def _normalize_function_name(self, name: str) -> str:
-        if name.lower() == "fn_greet":
-            return "fn_greet"
-        return name
+        return self._best_fn_match(generated), current_context
 
     def _mask_for_fn_name(self, logits: np.ndarray, current: str) -> np.ndarray:
         masked = np.full_like(logits, NEG_INF)
@@ -134,7 +126,9 @@ class ConstrainedDecoder:
                 best_name = name
         return best_name
 
-    def _generate_parameters(self, context: list[int], fn_def: FunctionDef) -> tuple[dict[str, Any], list[int]]:
+    def _generate_parameters(
+        self, context: list[int], fn_def: FunctionDef, user_prompt: str = ""
+    ) -> tuple[dict[str, Any], list[int]]:
         context = context + self._encode('", "parameters": {')
         params: dict[str, Any] = {}
         for i, (param_name, param_typedef) in enumerate(fn_def.parameters.items()):
@@ -151,32 +145,25 @@ class ConstrainedDecoder:
                 context += self._encode('"')
             params[param_name] = value
         context += self._encode("}}")
-        params = self._normalize_parameters(params, fn_def.name)
+        params = self._normalize_parameters(params, fn_def, user_prompt)
         return params, context
 
-    def _normalize_parameters(self, params: dict[str, Any], fn_name: str) -> dict[str, Any]:
+    def _normalize_parameters(
+        self, params: dict[str, Any], fn_def: FunctionDef, user_prompt: str = ""
+    ) -> dict[str, Any]:
+        """Coerce parameter values to the types defined in the function schema."""
         params = params.copy()
-        if fn_name == "fn_greet" and "name" in params:
-            if isinstance(params["name"], str):
-                params["name"] = params["name"].lower().strip()
-
-        fn_def = self.fn_map[fn_name]
         for param_name, param_typedef in fn_def.parameters.items():
             if param_name not in params:
                 continue
-
             value = params[param_name]
             param_type = param_typedef.type
-
             if param_type == ParamType.INTEGER:
                 if not isinstance(value, int) or isinstance(value, bool):
                     params[param_name] = int(self._parse_number(str(value), ParamType.INTEGER))
             elif param_type == ParamType.NUMBER:
                 if not isinstance(value, float):
                     params[param_name] = float(self._parse_number(str(value), ParamType.NUMBER))
-            elif isinstance(value, str):
-                params[param_name] = value.strip()
-
         return params
 
     def _gen_number(self, context: list[int], param_type: ParamType) -> tuple[int | float, list[int]]:
@@ -310,7 +297,9 @@ class ConstrainedDecoder:
                 "Read the user request carefully and select the single most "
                 "appropriate function.\n"
                 "The function name must exactly match one of the available "
-                "functions.\n\n"
+                "functions.\n"
+                "Extract argument values exactly as they appear in the user "
+                "request, preserving the original spelling and casing.\n\n"
                 f"Available functions:\n{fn_list}\n\n"
                 f"User request: {user_prompt}\n"
                 'Selected function name: "')
