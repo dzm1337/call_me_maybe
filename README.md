@@ -34,10 +34,6 @@ Instead of relying on fragile prompting, the system forces the LLM to generate *
 ### Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/dzm1337/call_me_maybe.git
-cd call_me_maybe
-
 # Create virtual environment and install dependencies
 uv sync
 Usage
@@ -49,8 +45,8 @@ uv run python -m src \
   --functions_definition data/input/functions_definition.json \
   --input data/input/function_calling_tests.json \
   --output data/output/function_calling_results.json
+
 Makefile Commands
-Bashmake install    # Install dependencies
 make run        # Run the program
 make debug      # Run with Python debugger
 make lint       # Run flake8 + mypy
