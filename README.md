@@ -227,5 +227,3 @@ Edge cases considered:
 AI was used to:
 - Review type annotations for `mypy` compliance
 - Readme Structuration
-
-All logic was understood, validated, and adapted manually. No code was blindly copied without understanding.
