@@ -194,6 +194,7 @@
   AI Assistance
   This project made use of AI tools for:
 
-  Structuring the README
+  Structuring README.md
 
   Brainstorming constrained decoding strategies
+
