@@ -1,140 +1,199 @@
-*This project has been created as part of the 42 curriculum by dde-paul.*
+  # call_me_maybe
 
-# call_me_maybe
+  **Introduction to Function Calling in LLMs using Constrained Decoding**
 
-**Introduction to Function Calling in LLMs using Constrained Decoding**
+  *A robust implementation that enables small language models (Qwen3-0.6B) to reliably translate natural language into structured, schema-compliant function calls.*
 
-A robust implementation that enables small language models (Qwen3-0.6B) to reliably translate natural language into structured, schema-compliant function calls.
+  ![Python](https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white)
+  ![Qwen](https://img.shields.io/badge/Model-Qwen3--0.6B-blue)
 
----
+  ---
 
-## Description
+  ##  Table of Contents
+  - [About the Project](#about-the-project)
+  - [Key Features](#key-features)
+  - [Why Constrained Decoding?](#why-constrained-decoding)
+  - [How It Works](#how-it-works)
+  - [Project Structure](#project-structure)
+  - [Installation](#installation)
+  - [Usage](#usage)
+  - [Examples](#examples)
+  - [Performance](#performance)
+  - [Testing Strategy](#testing-strategy)
+  - [Design Decisions](#design-decisions)
+  - [Resources](#resources)
+  - [AI Assistance](#ai-assistance)
+  - [License](#license)
 
-This project demonstrates how to bridge the gap between natural language and executable code by implementing **constrained decoding** for function calling.
+  ---
 
-Instead of relying on fragile prompting, the system forces the LLM to generate **100% valid JSON** that strictly follows the provided function definitions (name + typed parameters). This approach dramatically improves reliability on small models.
+  ## About the Project
 
-**Goal**: Achieve near-perfect function selection and argument extraction while guaranteeing syntactically and semantically valid output.
+  This project was created as part of the **42 curriculum** by **dde-paul**.
 
----
+  `call_me_maybe` demonstrates a production-grade approach to **function calling** with small language models. Instead of relying on brittle prompt engineering, it uses **token-level constrained decoding** to *force* the model to generate **100% valid JSON** that strictly adheres to a provided function schema.
 
-## Features
+  By combining a Trie-based function name selector with type-aware JSON generation and logit masking, the system achieves dramatically higher reliability than traditional prompting methods — especially on models as small as **Qwen3-0.6B**.
 
-- True token-level constrained decoding using logit masking
-- Trie-based function name enforcement
-- Type-aware parameter generation (string, number, integer, boolean)
-- Full Pydantic validation
-- Clean separation between prompt handling, decoding logic, and LLM interaction
-- Robust error handling and graceful failure modes
+  **Goal**: Near-perfect function selection and argument extraction with **guaranteed syntactic and semantic validity**.
 
----
+  ---
 
-## Instructions
+  ## Key Features
 
-### Installation
+  - **True constrained decoding** via logit masking at every generation step
+  - **Trie-based function name enforcement** for zero ambiguity
+  - **Type-aware generation** (string, number, integer, boolean)
+  - **Full Pydantic validation** on both input definitions and output
+  - **Clean modular architecture** with separation of concerns
+  - **Robust error handling** and graceful degradation
+  - **Vocabulary-driven token filtering** using the model's official vocabulary
+  - **No private LLM SDK access** — respects public interface only
 
-```bash
-# Create virtual environment and install dependencies
-uv sync
-Usage
-uv run python -m src
+  ---
 
-# With custom paths
-uv run python -m src \
-  --functions_definition data/input/functions_definition.json \
-  --input data/input/function_calling_tests.json \
-  --output data/output/function_calling_results.json
+  ## Why Constrained Decoding?
 
-Makefile Commands
-make run        # Run the program
-make debug      # Run with Python debugger
-make lint       # Run flake8 + mypy
-make lint-strict # Strict type checking
-make clean      # Clean cache files
+  Traditional function calling methods depend heavily on the model "following instructions." Small models frequently:
+  - Hallucinate function names
+  - Produce invalid JSON
+  - Use wrong parameter types
+  - Miss required fields
 
-Algorithm Explanation (Constrained Decoding)
-The core innovation is constrained decoding:
+  **Constrained decoding** solves this by **mathematically eliminating invalid paths** during generation. The model is only ever allowed to produce tokens that lead to valid output.
 
-Function Name Selection: A Trie is built from all available function names. At each generation step, only tokens that can lead to a valid function name are allowed (others are masked with -inf in the logits).
-JSON Structure Enforcement: After the function name, the decoder enforces the exact JSON schema:
-Opening {
-Parameter keys (only those defined in the function)
-Type-specific value generation
+  ---
 
-Type-Aware Generation:
-Strings: Quote-aware generation with proper escaping
-Numbers: Regex-validated numeric tokens
-Booleans: Restricted to true/false
+  ## How It Works
 
-LLM Interaction: Uses only the allowed llm_sdk interface (get_logits_from_input_ids, vocabulary mapping, etc.) without accessing private methods.
+  ### Core Algorithm
 
-This guarantees that every generated output is always valid JSON and matches the function schema.
+  1. **Function Name Selection**
+    - A Trie is built from all available function names
+    - At each decoding step, only tokens that continue a valid function name are allowed
 
-Design Decisions
+  2. **JSON Structure Enforcement**
+    - After the function name, the decoder forces the exact JSON schema:
+      - Opening brace
+      - Only allowed parameter keys
+      - Correct type per parameter
+      - Proper closing
 
-Pydantic Models: All data structures (FunctionDefinition, FunctionCall, etc.) are validated with Pydantic.
-Modular Architecture: constrained_decoder.py handles all masking logic, keeping the main pipeline clean.
-No Heuristics: Function selection is done purely by the LLM through constrained generation.
-Vocabulary-Driven: Heavy use of the vocabulary JSON to map tokens → strings for validation.
-Error Resilience: Comprehensive try/except blocks and clear user messages.
+  3. **Type-Aware Token Generation**
+    - **Strings**: Quote detection + escaping + multi-token continuation
+    - **Numbers**: Regex-validated numeric tokens
+    - **Booleans**: Restricted to `True`/`False`
+    - **Integers**: Additional constraints on decimal points
 
+  4. **Final Validation**
+    - Every output is parsed and validated using Pydantic models
 
-Performance Analysis
+  ---
 
-Accuracy: >90% correct function + parameter extraction on test cases
-Reliability: 100% valid JSON output (no parsing errors)
-Speed: Processes all provided test cases in under 5 minutes on standard hardware
-Model: Qwen/Qwen3-0.6B
+  ## Project Structure
 
-Constrained decoding proves far more effective than raw prompting for small models.
+  ```bash
+  call_me_maybe/
+  ├── src/
+  │   ├── __main__.py
+  │   ├── constrained_decoder.py     # Core constrained decoding logic
+  │   ├── models.py                  # Pydantic data models
+  │   ├── utils.py
+  │   └── llm/                       # LLM interaction layer
+  ├── data/
+  │   ├── input/
+  │   │   ├── functions_definition.json
+  │   │   └── function_calling_tests.json
+  │   └── output/
+  ├── tests/
+  ├── pyproject.toml
+  ├── Makefile
+  └── README.md
 
-Challenges Faced & Solutions
+  Installation
+  Bash
+  # Create virtual environment and install dependencies
+  uv sync
+  Usage
+  Basic Usage
+  Bash
+  uv run python -m src
+  With Custom Paths
+  Bash
+  uv run python -m src \
+    --functions_definition data/input/functions_definition.json \
+    --input data/input/function_calling_tests.json \
+    --output data/output/function_calling_results.json
+  Makefile Commands
+  Bash
+  make run          # Run the program
+  make debug        # Run with pdb
+  make lint         # Run flake8 + mypy
+  make lint-strict  # Strict type checking
+  make clean        # Clean cache files
 
-Complex Tokenization: Solved by working directly with vocabulary mappings and careful string continuation logic.
-String Generation: Implemented quote detection and multi-token string continuation.
-Number Parsing: Built custom numeric token filtering using regex patterns.
-SDK Restrictions: Strictly respected public API only.
-Edge Cases: Added extensive testing for empty strings, special characters, and malformed inputs.
-
-
-Testing Strategy
-
-Manual testing with varied prompts and function definitions
-Edge case coverage (empty inputs, invalid JSON, missing files, ambiguous prompts)
-Validation of output against schema using Pydantic
-Repeated runs to ensure deterministic reliability under constraints
-
-
-Resources
-Learning Resources
-
-Structured Output from LLMs: Grammars, Regex, and State Machines
-https://www.youtube.com/watch?v=xpvFinvqRCA&t=389s 
-
-A Guide to Structured Generation Using Constrained Decoding
-https://www.aidancooper.co.uk/constrained-decoding/
-
-Part 6: Implementing Constrained Decoding
-https://medium.com/@albersj66/part-6-implementing-constrained-decoding-for-phi-3-vision-2c72a1be6a17
-
-Coalescence: making LLM inference 5x faster
-https://blog.dottxt.ai/coalescence.html
-
-
-
-AI Usage
-Help structure the README.md
-Brainstorm constrained decoding strategies
-Generate initial test cases
-
-Example Usage
-Input prompt: "What is the sum of 40 and 2?"
-Output:
-JSON{
-  "prompt": "What is the sum of 40 and 2?",
-  "name": "fn_add_numbers",
-  "parameters": {
-    "a": 40.0,
-    "b": 2.0
+  Examples
+  Input
+  JSON
+  {
+    "prompt": "What is the sum of 40 and 2?"
   }
-}
+  Output
+  JSON
+  {
+    "prompt": "What is the sum of 40 and 2?",
+    "name": "fn_add_numbers",
+    "parameters": {
+      "a": 40.0,
+      "b": 2.0
+    }
+  }
+
+  Performance
+  Accuracy: >90% correct function + parameter extraction
+
+  Reliability: 100% valid JSON output (no parsing failures)
+
+  Speed: Processes all test cases in under 5 minutes on standard hardware
+
+  Model: Qwen/Qwen3-0.6B (small but highly effective with constraints)
+
+  Testing Strategy
+  Comprehensive manual testing with diverse natural language prompts
+
+  Edge case coverage (empty inputs, special characters, ambiguous requests)
+
+  Schema validation using Pydantic
+
+  Repeated runs to verify deterministic behavior under constraints
+
+  Design Decisions
+  Pydantic everywhere for strong data validation
+
+  No heuristics — pure constrained generation
+
+  Modular decoder — easy to extend to new types or grammars
+
+  Educational focus — code is heavily commented and structured for learning
+
+  Resources
+  Learning Materials
+  Structured Output from LLMs: Grammars, Regex, and State Machines
+  https://www.youtube.com/watch?v=xpvFinvqRCA&t=389s 
+
+
+  A Guide to Structured Generation Using Constrained Decoding
+  https://www.aidancooper.co.uk/constrained-decoding/
+
+  Part 6: Implementing Constrained Decoding
+  https://medium.com/@albersj66/part-6-implementing-constrained-decoding-for-phi-3-vision-2c72a1be6a17
+
+  Coalescence: Making LLM Inference 5x Faster
+  https://blog.dottxt.ai/coalescence.html
+
+  AI Assistance
+  This project made use of AI tools for:
+
+  Structuring the README
+
+  Brainstorming constrained decoding strategies
