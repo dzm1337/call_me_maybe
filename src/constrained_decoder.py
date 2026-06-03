@@ -1,5 +1,5 @@
 import re
-from typing import Any
+from typing import Any, TypeAlias
 
 import numpy as np
 import numpy.typing as npt
@@ -9,7 +9,7 @@ from src.models import FunctionCallResult, FunctionDef, ParamType
 from src.vocabulary import load_vocabulary
 
 NEG_INF: float = float("-inf")
-FloatArray = npt.NDArray[np.float64]
+FloatArray: TypeAlias = npt.NDArray[np.float64]
 
 
 class TrieNode:
