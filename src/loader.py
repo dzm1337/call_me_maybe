@@ -7,6 +7,7 @@ from src.models import FunctionDef
 
 
 def load_functions(path: Path) -> list[FunctionDef]:
+    """Load and validate a list of FunctionDef objects from a JSON file."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -23,6 +24,7 @@ def load_functions(path: Path) -> list[FunctionDef]:
         )
 
     functions: list[FunctionDef] = []
+    # Validate each entry against the FunctionDef schema
     for i, item in enumerate(data):
         try:
             functions.append(FunctionDef.model_validate(item))
@@ -33,6 +35,7 @@ def load_functions(path: Path) -> list[FunctionDef]:
 
 
 def load_prompts(path: Path) -> list[str]:
+    """Load a list of prompt strings from a JSON file."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -49,6 +52,7 @@ def load_prompts(path: Path) -> list[str]:
         )
 
     prompts: list[str] = []
+    # Extract the "prompt" field from each dictionary entry
     for i, item in enumerate(data):
         if not isinstance(item, dict) or "prompt" not in item:
             raise ValueError(

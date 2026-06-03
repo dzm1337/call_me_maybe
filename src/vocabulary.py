@@ -6,6 +6,7 @@ from llm_sdk import Small_LLM_Model  # type: ignore
 def load_vocabulary(
     model: Small_LLM_Model,
 ) -> tuple[dict[int, str], dict[str, int]]:
+    """Load vocabulary JSON and build ID→token and token→ID mappings."""
     try:
         vocab_path = model.get_path_to_vocab_file()
     except Exception as e:
@@ -22,6 +23,7 @@ def load_vocabulary(
     id_to_token: dict[int, str] = {}
     token_to_id: dict[str, int] = {}
 
+    # Convert raw string→id mapping into validated integer-based dictionaries
     for token_str, token_id in raw.items():
         try:
             tid = int(token_id)
