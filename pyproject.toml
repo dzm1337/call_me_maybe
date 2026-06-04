@@ -1,28 +1,35 @@
 [project]
 name = "call-me-maybe"
 version = "0.1.0"
-description = "Translate natural language into function calls..."
+description = "Translate natural language into function calls following a certain schema..."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "llm-sdk",
-    "numpy>=2.2.6",
+    "numpy>=2.2.0",
     "pydantic>=2.12.5",
 ]
 
 [tool.uv.sources]
 llm-sdk = { path = "./llm_sdk" }
+
 [dependency-groups]
 dev = [
 
     "flake8>=7.0.0",
     "mypy>=1.8.0",
 ]
+
 [tool.mypy]
-exclude = '(^\.venv/|^llm_sdk/|^data/|^build/|^dist/)'
+exclude = [
+    ".venv",
+    "llm_sdk",
+    "data",
+    "build",
+    "dist",
+]
 warn_return_any = true
 warn_unused_ignores = true
 ignore_missing_imports = true
 disallow_untyped_defs = true
 check_untyped_defs = true
-

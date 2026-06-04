@@ -1,7 +1,11 @@
-.PHONY: install run debug clean lint lint-strict
+.PHONY: install export_cache run debug clean lint lint-strict
 
 install:
 	uv sync
+
+export_cache:
+	@mkdir -p /goinfre/$(USER)/.uv_cache
+	export UV_CACHE_DIR="/goinfre/$(USER)/.uv_cache" && uv sync
 
 run:
 	uv run python -m src
@@ -10,8 +14,8 @@ debug:
 	uv run python -m pdb -m src
 
 clean:
-	find . -type d \( -name "__pycache__" -o -name ".mypy_cache" -o -name ".pytest_cache" \) -exec rm -rf {} + 2>/dev/null || true
-	find . -type f \( -name "*.pyc" -o -name "*.pyo" \) -delete 2>/dev/null || true
+	rm -rf __pycache__ .pytest_cache .mypy_cache .uv
+	find . -type d -name "__pycache__" -exec rm -rf {} +
 
 lint:
 	uv run flake8 .
