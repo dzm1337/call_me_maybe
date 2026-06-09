@@ -1,9 +1,7 @@
 USER ?= $(shell whoami)
 
-# 1. Procura se existe algum goinfre no sistema
 GOINFRE_DETECTED := $(firstword $(wildcard /goinfre/$(USER) /nfs/goinfre/$(USER) /sgoinfre/$(USER)))
 
-# 2. Se o goinfre existir, injeta as variáveis. Em casa (onde não existe), ignora este bloco.
 ifneq ($(GOINFRE_DETECTED),)
     init_cache install run debug lint lint-strict: export UV_CACHE_DIR := $(GOINFRE_DETECTED)/.uv_cache
     init_cache install run debug lint lint-strict: export HF_HOME := $(GOINFRE_DETECTED)/.cache/huggingface
