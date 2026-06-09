@@ -1,350 +1,223 @@
-import re
 from typing import Any, TypeAlias
-from src.trie import Trie
+
 import numpy as np
 import numpy.typing as npt
 
 from llm_sdk import Small_LLM_Model  # type: ignore
+from src.trie import Trie
 from src.models import FunctionCallResult, FunctionDef, ParamType
 from src.vocabulary import load_vocabulary
+from src.token_decoder import TokenDecoder
 
 NEG_INF: float = float("-inf")
-# Convenience alias for a 1D float64 numpy array used as logits
 FloatArray: TypeAlias = npt.NDArray[np.float64]
 
 
 class ConstrainedDecoder:
     """
-    Decodes structured function calls from an LLM using constrained token masking.
-    Ensures the model only produces valid function names and typed parameters.
+    Orchestrates structured constrained decoding.
+
+    Responsible for selecting a valid function name and generating
+    schema-compliant parameters while preserving JSON structure.
     """
 
-    def __init__(self, model: Small_LLM_Model, functions: list[FunctionDef]) -> None:
+    def __init__(
+        self,
+        model: Small_LLM_Model,
+        functions: list[FunctionDef],
+    ) -> None:
+        """
+        Initialize decoding components and structural helpers.
+        """
+
+        # Store model reference and function schema.
         self.model = model
         self.functions = functions
-        self.fn_names: list[str] = [f.name for f in functions]
-        self.fn_map: dict[str, FunctionDef] = {f.name: f for f in functions}
+        self.fn_names = [f.name for f in functions]
+        self.fn_map = {f.name: f for f in functions}
 
-        self.id_to_token: dict[int, str] = {}
-        self.token_to_id: dict[str, int] = {}
+        # Load tokenizer vocabulary for token-to-text mapping.
         self.id_to_token, self.token_to_id = load_vocabulary(model)
 
-        self.stop_ids: set[int] = self._load_stop_ids()
-        self.quote_ids: set[int] = self._load_quote_ids()
-        self.newline_ids: set[int] = self._load_newline_ids()
+        # Precompute structural token categories.
+        self.stop_ids = self._load_stop_ids()
+        self.quote_ids = self._load_quote_ids()
+        self.newline_ids = self._load_newline_ids()
 
-        # Build the trie from all registered function names for prefix-based masking
+        # Trie enforces prefix-constrained function name decoding.
         self.fn_trie = Trie()
         for name in self.fn_names:
             self.fn_trie.insert(name)
 
-    def _load_stop_ids(self) -> set[int]:
-        """Collect token IDs that signal the end of a sequence."""
-        stop_strings = {
-            "<|endoftext|>",
-            "</s>",
-            "<|im_end|>",
-            "<eos>",
-            "<|eot_id|>",
-        }
-        return {tid for tid, tok in self.id_to_token.items() if tok in stop_strings}
-
-    def _load_quote_ids(self) -> set[int]:
-        """Collect token IDs whose cleaned
-        representation is a double-quote character."""
-        return {tid for tid, tok in self.id_to_token.items() if self._clean(tok) == '"'}
-
-    def _load_newline_ids(self) -> set[int]:
-        """Collect token IDs that represent newline or line-break characters."""
-        return {
-            tid for tid, tok in self.id_to_token.items() if "Ċ" in tok or "\n" in tok
-        }
-
-    def generate(self, user_prompt: str) -> FunctionCallResult:
-        """Run the full constrained generation pipeline and
-        return a structured function call."""
-        prompt = self._build_prompt(user_prompt)
-        context = self._encode(prompt)
-        fn_name, context = self._generate_fn_name(context)
-        fn_def = self.fn_map[fn_name]
-        parameters, context = self._generate_parameters(context, fn_def, user_prompt)
-        return FunctionCallResult(
-            prompt=user_prompt, name=fn_name, parameters=parameters
+        # TokenDecoder handles primitive value generation.
+        self.token_decoder = TokenDecoder(
+            model=self.model,
+            id_to_token=self.id_to_token,
+            stop_ids=self.stop_ids,
+            newline_ids=self.newline_ids,
         )
 
-    def _generate_fn_name(self, context: list[int]) -> tuple[str, list[int]]:
-        """Greedily decode a valid function name token by
-        token using trie-based masking."""
+    def generate(self, user_prompt: str) -> FunctionCallResult:
+        """
+        Execute full constrained decoding pipeline.
+
+        Produces a valid function call strictly aligned
+        with the declared function schema.
+        """
+        prompt = self._build_prompt(user_prompt)
+        context = self._encode(prompt)
+
+        fn_name, context = self._generate_fn_name(context)
+        fn_def = self.fn_map[fn_name]
+
+        parameters, context = self._generate_parameters(
+            context,
+            fn_def,
+            user_prompt,
+        )
+
+        return FunctionCallResult(
+            prompt=user_prompt,
+            name=fn_name,
+            parameters=parameters,
+        )
+
+    def _generate_fn_name(
+        self,
+        context: list[int],
+    ) -> tuple[str, list[int]]:
+        """
+        Decode a function name under trie-based masking.
+
+        The model is only allowed to extend valid prefixes,
+        ensuring the final output matches a declared function.
+        """
         generated = ""
         current_context = list(context)
+
         for _ in range(15):
             logits = self._get_logits(current_context)
             masked = self._mask_for_fn_name(logits, generated)
+
             next_id = int(np.argmax(masked))
             token_str = self.id_to_token.get(next_id, "")
             clean_token = self._clean(token_str)
+
             current_context.append(next_id)
             generated += clean_token
+
             if self.fn_trie.is_complete_word(generated):
                 return generated, current_context
+
             if not self.fn_trie.is_prefix(generated):
                 break
+
         return self._best_fn_match(generated), current_context
 
-    def _mask_for_fn_name(self, logits: FloatArray, current: str) -> FloatArray:
-        """Allow only tokens that keep the
-        generated text a valid trie prefix or complete word."""
+    def _mask_for_fn_name(
+        self,
+        logits: FloatArray,
+        current: str,
+    ) -> FloatArray:
+        """
+        Restrict tokens that would invalidate the current trie prefix.
+
+        Only continuations that maintain a valid function name
+        remain selectable.
+        """
         masked = np.full_like(logits, NEG_INF)
-        for token_id, token_str in self.id_to_token.items():
+
+        for tid, token_str in self.id_to_token.items():
             clean = self._clean(token_str)
             if not clean:
                 continue
+
             candidate = current + clean
+
             if self.fn_trie.is_prefix(candidate) or self.fn_trie.is_complete_word(
                 candidate
             ):
-                masked[token_id] = logits[token_id]
+                masked[tid] = logits[tid]
+
         return masked if np.any(masked != NEG_INF) else logits.copy()
 
     def _best_fn_match(self, text: str) -> str:
-        """Return the function name with the most characters
-        in common with the given text."""
+        """Fallback to closest matching function name."""
         best_name = self.fn_names[0]
         best_len = -1
+
         for name in self.fn_names:
             common = sum(1 for a, b in zip(text, name) if a == b)
             if common > best_len:
                 best_len = common
                 best_name = name
+
         return best_name
 
     def _generate_parameters(
-        self, context: list[int], fn_def: FunctionDef, user_prompt: str = ""
+        self,
+        context: list[int],
+        fn_def: FunctionDef,
+        user_prompt: str,
     ) -> tuple[dict[str, Any], list[int]]:
-        """Decode each parameter value according
-        to its declared type in the function schema."""
+        """
+        Decode parameters according to declared types.
+
+        Primitive values are delegated to TokenDecoder.
+        """
         context = context + self._encode('", "parameters": {')
         params: dict[str, Any] = {}
         value: Any
+
         for i, (param_name, param_typedef) in enumerate(fn_def.parameters.items()):
             separator = "" if i == 0 else ", "
             context += self._encode(f'{separator}"{param_name}": ')
+
             param_type = param_typedef.type
+
             if param_type in {ParamType.NUMBER, ParamType.INTEGER}:
-                value, context = self._gen_number(context, param_type)
+                value, context = self.token_decoder.gen_number(context, param_type)
+
             elif param_type == ParamType.BOOLEAN:
-                value, context = self._gen_boolean(context)
+                value, context = self.token_decoder.gen_boolean(context)
+
             else:
                 context += self._encode('"')
-                value, context = self._gen_string(context)
+                value, context = self.token_decoder.gen_string(context)
                 context += self._encode('"')
+
             params[param_name] = value
+
         context += self._encode("}}")
-        params = self._normalize_parameters(params, fn_def, user_prompt)
+        params = self._normalize_parameters(params, fn_def)
+
         return params, context
 
     def _normalize_parameters(
         self,
         params: dict[str, Any],
         fn_def: FunctionDef,
-        user_prompt: str = "",
     ) -> dict[str, Any]:
-        """Coerce parameter values to the types defined in the function schema."""
+        """Ensure generated parameters match declared types."""
         params = params.copy()
-        for param_name, param_typedef in fn_def.parameters.items():
-            if param_name not in params:
+
+        for name, typedef in fn_def.parameters.items():
+            if name not in params:
                 continue
-            value = params[param_name]
-            param_type = param_typedef.type
-            if param_type == ParamType.INTEGER:
-                if not isinstance(value, int) or isinstance(value, bool):
-                    params[param_name] = int(
-                        self._parse_number(str(value), ParamType.INTEGER)
-                    )
-            elif param_type == ParamType.NUMBER:
-                if not isinstance(value, float):
-                    params[param_name] = float(
-                        self._parse_number(str(value), ParamType.NUMBER)
-                    )
+
+            value = params[name]
+            param_type = typedef.type
+
+            if param_type == ParamType.INTEGER and not isinstance(value, int):
+                params[name] = int(value)
+
+            if param_type == ParamType.NUMBER and not isinstance(value, float):
+                params[name] = float(value)
+
         return params
 
-    def _gen_number(
-        self, context: list[int], param_type: ParamType
-    ) -> tuple[int | float, list[int]]:
-        """Decode a numeric value token by token,
-        stopping when the number is complete."""
-        generated = ""
-        current_context = list(context)
-        for _ in range(15):
-            logits = self._get_logits(current_context)
-            masked = self._mask_for_number(logits, generated)
-            next_id = int(np.argmax(masked))
-            token_str = self._clean(self.id_to_token.get(next_id, ""))
-            if not token_str:
-                break
-            candidate = generated + token_str
-            if not self._is_number_prefix(candidate):
-                break
-            current_context.append(next_id)
-            generated = candidate
-            if self._is_complete_number(generated):
-                next_logits = self._get_logits(current_context)
-                next_id2 = int(np.argmax(next_logits))
-                next_str = self._clean(self.id_to_token.get(next_id2, ""))
-                if not self._would_extend_number(next_str, generated):
-                    break
-        return self._parse_number(generated, param_type), current_context
-
-    def _mask_for_number(self, logits: FloatArray, current: str) -> FloatArray:
-        """Allow only tokens that extend the current
-        text into a valid numeric prefix."""
-        masked = np.full_like(logits, NEG_INF)
-        for token_id, token_str in self.id_to_token.items():
-            text = self._clean(token_str)
-            if (
-                text
-                and self._is_number_prefix(current + text)
-                and len(current + text) <= 10
-            ):
-                masked[token_id] = logits[token_id]
-        return masked if np.any(masked != NEG_INF) else logits.copy()
-
-    def _is_number_prefix(self, text: str) -> bool:
-        """Return True if text matches the pattern
-        of an in-progress number literal."""
-        return bool(re.match(r"^-?\d*\.?\d*$", text))
-
-    def _is_complete_number(self, text: str) -> bool:
-        """Return True if text can be fully parsed as a float."""
-        try:
-            float(text)
-            return True
-        except ValueError:
-            return False
-
-    def _would_extend_number(self, next_str: str, current: str) -> bool:
-        """Return True if appending next_str to current
-        still forms a valid number prefix."""
-        if not next_str:
-            return False
-        candidate = current + next_str
-        return self._is_number_prefix(candidate) and len(candidate) <= 10
-
-    def _parse_number(
-        self, text: str, param_type: ParamType = ParamType.NUMBER
-    ) -> int | float:
-        """Parse text into an int or float, falling back to
-        regex extraction on failure."""
-        try:
-            value = float(text)
-        except ValueError:
-            match = re.search(r"-?\d+\.?\d*", text)
-            value = float(match.group()) if match else 0.0
-
-        if param_type == ParamType.INTEGER:
-            return int(value)
-        return float(value)
-
-    def _gen_boolean(self, context: list[int]) -> tuple[bool, list[int]]:
-        """Select the highest-scoring token that cleanly
-        maps to 'true' or 'false'."""
-        logits = self._get_logits(context)
-        true_score = NEG_INF
-        false_score = NEG_INF
-        true_id = None
-        false_id = None
-        for token_id, token_str in self.id_to_token.items():
-            text = self._clean(token_str)
-            score = float(logits[token_id])
-            if text == "true" and score > true_score:
-                true_score = score
-                true_id = token_id
-            elif text == "false" and score > false_score:
-                false_score = score
-                false_id = token_id
-        if true_score >= false_score and true_id is not None:
-            return True, context + [true_id]
-        if false_id is not None:
-            return False, context + [false_id]
-        return False, context
-
-    def _is_string_continuation(self, token_id: int, token_raw: str) -> bool:
-        """Return True if the token should be
-        treated as part of an ongoing string value."""
-        if token_id in self.stop_ids or token_id in self.newline_ids:
-            return False
-        decoded = self._clean(token_raw)
-        stripped = decoded.lstrip()
-        if not stripped:
-            return True
-        return stripped[0] not in ",}]"
-
-    def _mask_for_string(self, logits: FloatArray, current: str) -> FloatArray:
-        masked = np.full_like(logits, NEG_INF)
-
-        for tid, tstr in self.id_to_token.items():
-            if tid in self.stop_ids or tid in self.newline_ids:
-                continue
-
-            decoded = self._clean(tstr)
-
-            if "\n" in decoded:
-                continue
-
-            if decoded.count("\\") > 1:
-                continue
-
-            candidate = current + decoded
-
-            if re.search(r"\\\\{3,}", candidate):
-                continue
-
-            masked[tid] = logits[tid]
-
-        return masked if np.any(masked != NEG_INF) else logits.copy()
-
-    def _gen_string(self, context: list[int]) -> tuple[str, list[int]]:
-        """Decode a string value token by token,
-        stopping at a closing quote or newline."""
-        parts: list[str] = []
-        current_context = list(context)
-        generated = ""
-        for _ in range(80):
-            logits = self._get_logits(current_context)
-            masked = self._mask_for_string(logits, generated)
-            next_id = int(np.argmax(masked))
-            token_raw = self.id_to_token.get(next_id, "")
-
-            decoded = self._clean(token_raw)
-
-            if decoded.strip() == '"':
-                # Peek ahead to determine if the quote is embedded
-                # or a string terminator
-                look_context = current_context + [next_id]
-                look_logits = self._get_logits(look_context)
-                look_id = int(np.argmax(look_logits))
-                look_raw = self.id_to_token.get(look_id, "")
-                if self._is_string_continuation(look_id, look_raw):
-                    parts.append('"')
-                    current_context.append(next_id)
-                    continue
-                break
-
-            if '"' in decoded:
-                # Keep only the text before the closing quote
-                before_quote = decoded.split('"', 1)[0]
-                if before_quote:
-                    parts.append(before_quote)
-                break
-
-            parts.append(decoded)
-            current_context.append(next_id)
-
-        return "".join(parts).lstrip(), current_context
-
     def _build_prompt(self, user_prompt: str) -> str:
-        """Construct the system prompt that presents
-        available functions and the user request."""
+        """Construct the original system prompt."""
         fn_lines = []
         for f in self.functions:
             params = ", ".join(
@@ -366,24 +239,47 @@ class ConstrainedDecoder:
         )
 
     def _clean(self, token_str: str) -> str:
-        """Strip whitespace markers
-        and surrounding whitespace from a token."""
+        """Remove tokenizer spacing markers."""
         return token_str.replace("Ġ", " ").replace("Ċ", "\n")
 
     def _encode(self, text: str) -> list[int]:
-        """Encode a string into a flat list of integer token
-        IDs using the model's tokenizer."""
+        """Encode text into token IDs."""
         result = self.model.encode(text)
+
         if hasattr(result, "tolist"):
             result = result.tolist()
-        if isinstance(result, list) and len(result) > 0 and isinstance(result[0], list):
+
+        if isinstance(result, list) and result and isinstance(result[0], list):
             result = result[0]
+
         return [int(x) for x in result]
 
     def _get_logits(self, token_ids: list[int]) -> FloatArray:
-        """Run a forward pass and return a flat float64 logits array
-        for the next token."""
+        """Return logits for next-token prediction."""
         raw = self.model.get_logits_from_input_ids(token_ids)
-        while isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], list):
+
+        while isinstance(raw, list) and raw and isinstance(raw[0], list):
             raw = raw[0]
+
         return np.array(raw, dtype=np.float64).flatten()
+
+    def _load_stop_ids(self) -> set[int]:
+        """Identify model termination tokens."""
+        stop_strings = {
+            "<|endoftext|>",
+            "</s>",
+            "<|im_end|>",
+            "<eos>",
+            "<|eot_id|>",
+        }
+        return {tid for tid, tok in self.id_to_token.items() if tok in stop_strings}
+
+    def _load_quote_ids(self) -> set[int]:
+        """Identify tokens representing double quotes."""
+        return {tid for tid, tok in self.id_to_token.items() if self._clean(tok) == '"'}
+
+    def _load_newline_ids(self) -> set[int]:
+        """Identify tokens representing newline characters."""
+        return {
+            tid for tid, tok in self.id_to_token.items() if "Ċ" in tok or "\n" in tok
+        }
