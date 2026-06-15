@@ -195,7 +195,7 @@ class TokenDecoder:
         masked = np.full_like(logits, NEG_INF)
 
         for tid, token_str in self.id_to_token.items():
-            text = self._clean(token_str)
+            text = self._clean(token_str).strip()
 
             if text and self._is_number_prefix(current + text):
                 masked[tid] = logits[tid]
@@ -231,7 +231,7 @@ class TokenDecoder:
             logits = self._get_logits(current_context)
             masked = self._mask_for_number(logits, generated)
             next_id = int(np.argmax(masked))
-            token_str = self._clean(self.id_to_token.get(next_id, ""))
+            token_str = self._clean(self.id_to_token.get(next_id, "")).strip()
 
             if not token_str:
                 break

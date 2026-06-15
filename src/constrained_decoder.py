@@ -171,7 +171,7 @@ class ConstrainedDecoder:
 
         for i, (param_name, param_typedef) in enumerate(fn_def.parameters.items()):
             separator = "" if i == 0 else ", "
-            context += self._encode(f'{separator}"{param_name}": ')
+            context += self._encode(f'{separator}"{param_name}":')
 
             param_type = param_typedef.type
 
